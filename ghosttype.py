@@ -23,29 +23,23 @@ if not API_KEY:
     print("専用のbatファイルから起動しているか確認してください。")
     os._exit(1)
 
-# 環境変数からモデル名を取得（設定がなければ 'gemini-3.1-flash-lite-preview' をデフォルトとする）
-MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-3.1-flash-lite-preview")
+MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+# スクショ送信フラグ (文字列の "true" を真偽値に変換)
+SEND_SCREENSHOT = os.environ.get("GHOSTTYPE_SEND_SCREENSHOT", "true").lower() == "true"
 
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel(MODEL_NAME)
 
-print(f"==========================================")
-print(f"[設定] 起動モデル: {MODEL_NAME}")
-print(f"==========================================")
-
-# 厳密な状態管理（連打やフリーズ対策）
+# 状態管理
 STATE_IDLE = 0
 STATE_RECORDING = 1
 STATE_PROCESSING = 2
 current_state = STATE_IDLE
 
-current_screenshot = None
-
 # ==========================================
-# Windows API ホットキー登録 (究極の安定化)
+# Windows API ホットキー登録
 # ==========================================
 def hotkey_listener_thread():
-    """OSレベルで直接ホットキーを監視する専用スレッド"""
     user32 = ctypes.windll.user32
     MOD_CONTROL = 0x0002
     MOD_NOREPEAT = 0x4000
@@ -67,7 +61,6 @@ def hotkey_listener_thread():
 # アクティブウィンドウ取得処理
 # ==========================================
 def capture_active_window():
-    """Windows APIを使ってアクティブウィンドウのみのスクショを取得する"""
     try:
         user32 = ctypes.windll.user32
         hwnd = user32.GetForegroundWindow()
@@ -78,7 +71,6 @@ def capture_active_window():
             return ImageGrab.grab(bbox=bbox)
     except Exception as e:
         print(f"[警告] アクティブウィンドウ取得失敗: {e}")
-    # 失敗した場合は全画面で代用
     return pyautogui.screenshot()
 
 # ==========================================
@@ -107,7 +99,6 @@ def init_gui():
     return root, label
 
 def update_ui(text, color='#61afef', show=True, auto_hide=False):
-    """状態に合わせてテキストと色を変更するUI更新関数"""
     def _update():
         label.config(text=text, fg=color)
         if show:
@@ -118,12 +109,10 @@ def update_ui(text, color='#61afef', show=True, auto_hide=False):
             root.after(2000, lambda: root.withdraw())
     root.after(0, _update)
 
-# --- アニメーション処理 ---
 anim_frames = ["⏳ 処理中", "⏳ 処理中.", "⌛ 処理中..", "⌛ 処理中..."]
 anim_idx = 0
 
 def animate_processing():
-    """処理中状態の間だけ、UIのテキストをパラパラ切り替える"""
     global current_state, anim_idx
     if current_state == STATE_PROCESSING:
         text = anim_frames[anim_idx % len(anim_frames)]
@@ -136,12 +125,23 @@ def animate_processing():
 # 処理ロジック
 # ==========================================
 def record_and_process():
-    global current_state, current_screenshot
+    global current_state
     
-    # 1. アクティブウィンドウの撮影
-    current_screenshot = capture_active_window()
+    # 1. 画像データの準備 (フラグがTrueの時だけ撮影・処理して時間を節約)
+    img_blob = None
+    if SEND_SCREENSHOT:
+        screenshot = capture_active_window()
+        screenshot.thumbnail((1024, 1024))
+        if screenshot.mode != 'RGB':
+            screenshot = screenshot.convert('RGB')
+        img_byte_arr = io.BytesIO()
+        screenshot.save(img_byte_arr, format='JPEG', quality=85)
+        img_blob = {
+            "mime_type": "image/jpeg",
+            "data": img_byte_arr.getvalue()
+        }
     
-    # 2. 録音設定 (16kHzに軽量化して高速化)
+    # 2. 録音処理
     CHUNK = 1024
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
@@ -175,29 +175,24 @@ def record_and_process():
         "data": audio_io.getvalue()
     }
     
-    # 4. 画像データの軽量化 (最大1024px, JPEG圧縮)
-    current_screenshot.thumbnail((1024, 1024))
-    if current_screenshot.mode != 'RGB':
-        current_screenshot = current_screenshot.convert('RGB')
-    img_byte_arr = io.BytesIO()
-    current_screenshot.save(img_byte_arr, format='JPEG', quality=85)
-    img_blob = {
-        "mime_type": "image/jpeg",
-        "data": img_byte_arr.getvalue()
-    }
-    
     try:
-        # ＝＝＝ 外部プロンプトファイルの読み込み（ホットリロード） ＝＝＝
+        # 4. 外部プロンプトファイルの読み込み
         prompt_file_path = "prompt.txt"
         if os.path.exists(prompt_file_path):
             with open(prompt_file_path, "r", encoding="utf-8") as f:
                 prompt = f.read()
         else:
             print("[警告] prompt.txt が見つかりません。デフォルトのプロンプトを使用します。")
-            prompt = "ユーザーの画面スクリーンショットと音声指示に基づき、入力すべきテキストのみを出力してください。"
+            prompt = "ユーザーの音声指示に基づき、入力すべきテキストのみを出力してください。"
         
-        # 5. Gemini APIへ送信
-        response = model.generate_content([prompt, img_blob, audio_blob])
+        # 5. APIリクエストデータの動的組み立て
+        request_data = [prompt]
+        if img_blob:
+            request_data.append(img_blob) # 画像があれば追加
+        request_data.append(audio_blob)   # 音声を追加
+        
+        # 6. Gemini APIへ送信
+        response = model.generate_content(request_data)
         
         try:
             result_text = response.text.strip()
@@ -210,12 +205,11 @@ def record_and_process():
             
         print(f"[完了] 生成されたテキスト: \n{result_text}")
         
-        # 6. クリップボードへコピーと貼り付け
+        # 7. クリップボードへコピーと貼り付け
         pyperclip.copy(result_text)
         update_ui("✨ 処理終了", color='#98c379', show=True, auto_hide=True)
         
         time.sleep(0.3) 
-        # 修飾キーの論理的な押しっぱなしを強制リセット
         pyautogui.keyUp('ctrl')
         pyautogui.keyUp('shift')
         pyautogui.keyUp('alt')
@@ -231,13 +225,11 @@ def on_hotkey_pressed():
     global current_state, anim_idx
     
     if current_state == STATE_IDLE:
-        # 録音開始
         current_state = STATE_RECORDING
         update_ui("🎙️ 録音中...", color='#ff5555', show=True)
         threading.Thread(target=record_and_process, daemon=True).start()
         
     elif current_state == STATE_RECORDING:
-        # 録音終了・処理開始
         current_state = STATE_PROCESSING
         anim_idx = 0
         animate_processing()
@@ -253,9 +245,5 @@ if __name__ == "__main__":
     print("終了するにはこのコンソールを閉じてください。")
     
     root, label = init_gui()
-    
-    # ホットキー監視を別スレッドで開始
     threading.Thread(target=hotkey_listener_thread, daemon=True).start()
-    
-    # GUIメインループ（アプリの維持）
     root.mainloop()
