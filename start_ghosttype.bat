@@ -9,7 +9,8 @@ setlocal
 rem ↓↓↓ ここにご自身のGemini APIキーを貼り付けてください（自分だけが使うPCの場合のみ） ↓↓↓
 set GEMINI_API_KEY=AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-rem 複数人で使用するPCの場合は、ユーザー環境変数GEMINI_API_KEYにAPIキーをセットしてください
+rem 複数人で使用するPCでは、APIキーをバッチファイル内に記入せず、
+rem ユーザー環境変数GEMINI_API_KEYにセットしてください
 
 rem ↓↓↓ 使用するGeminiのモデル名を指定してください ↓↓↓
 rem （例: gemini-2.5-flash, gemini-3-flash-preview または gemini-3.1-flash-lite-previewなど）
