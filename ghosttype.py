@@ -11,7 +11,10 @@ import pyaudio
 import pyautogui
 import pyperclip
 from PIL import ImageGrab
-import google.generativeai as genai
+
+# ＝＝＝ 新SDKへの変更点1：インポートの変更 ＝＝＝
+from google import genai
+from google.genai import types
 
 # ==========================================
 # 設定 (環境変数から読み込み)
@@ -27,8 +30,8 @@ MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 # スクショ送信フラグ (文字列の "true" を真偽値に変換)
 SEND_SCREENSHOT = os.environ.get("GHOSTTYPE_SEND_SCREENSHOT", "true").lower() == "true"
 
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel(MODEL_NAME)
+# ＝＝＝ 新SDKへの変更点2：Clientを使った初期化 ＝＝＝
+client = genai.Client(api_key=API_KEY)
 
 # 状態管理
 STATE_IDLE = 0
@@ -128,7 +131,7 @@ def record_and_process():
     global current_state
     
     # 1. 画像データの準備 (フラグがTrueの時だけ撮影・処理して時間を節約)
-    img_blob = None
+    img_part = None
     if SEND_SCREENSHOT:
         screenshot = capture_active_window()
         screenshot.thumbnail((1024, 1024))
@@ -136,10 +139,12 @@ def record_and_process():
             screenshot = screenshot.convert('RGB')
         img_byte_arr = io.BytesIO()
         screenshot.save(img_byte_arr, format='JPEG', quality=85)
-        img_blob = {
-            "mime_type": "image/jpeg",
-            "data": img_byte_arr.getvalue()
-        }
+        
+        # ＝＝＝ 新SDKへの変更点3：画像データをPartオブジェクトに変換 ＝＝＝
+        img_part = types.Part.from_bytes(
+            data=img_byte_arr.getvalue(),
+            mime_type="image/jpeg"
+        )
     
     # 2. 録音処理
     CHUNK = 1024
@@ -170,10 +175,11 @@ def record_and_process():
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
     
-    audio_blob = {
-        "mime_type": "audio/wav",
-        "data": audio_io.getvalue()
-    }
+    # ＝＝＝ 新SDKへの変更点4：音声データをPartオブジェクトに変換 ＝＝＝
+    audio_part = types.Part.from_bytes(
+        data=audio_io.getvalue(),
+        mime_type="audio/wav"
+    )
     
     try:
         # 4. 外部プロンプトファイルの読み込み
@@ -187,12 +193,15 @@ def record_and_process():
         
         # 5. APIリクエストデータの動的組み立て
         request_data = [prompt]
-        if img_blob:
-            request_data.append(img_blob) # 画像があれば追加
-        request_data.append(audio_blob)   # 音声を追加
+        if img_part:
+            request_data.append(img_part) # 画像があれば追加
+        request_data.append(audio_part)   # 音声を追加
         
-        # 6. Gemini APIへ送信
-        response = model.generate_content(request_data)
+        # ＝＝＝ 新SDKへの変更点5：リクエスト送信メソッドの変更 ＝＝＝
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=request_data
+        )
         
         try:
             result_text = response.text.strip()
