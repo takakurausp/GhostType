@@ -6,8 +6,10 @@ rem ==========================================
 rem 変数の影響範囲をこのバッチファイルの中だけに限定する
 setlocal
 
-rem ↓↓↓ ここにご自身のGemini APIキーを貼り付けてください ↓↓↓
+rem ↓↓↓ ここにご自身のGemini APIキーを貼り付けてください（自分だけが使うPCの場合のみ） ↓↓↓
 set GEMINI_API_KEY=AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+rem 複数人で使用するPCの場合は、ユーザー環境変数GEMINI_API_KEYにAPIキーをセットしてください
 
 rem ↓↓↓ 使用するGeminiのモデル名を指定してください ↓↓↓
 rem （例: gemini-2.5-flash, gemini-3-flash-preview または gemini-3.1-flash-lite-previewなど）
