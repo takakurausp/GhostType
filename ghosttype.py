@@ -39,7 +39,7 @@ current_state = STATE_IDLE
 # モード管理
 MODES = [
     ("🤖", "自動(合言葉)", ""),
-    ("✉", "強制: メール", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード1：メールモード」として処理してください。"),
+    ("✉️", "強制: メール", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード1：メールモード」として処理してください。"),
     ("📝", "強制: 箇条書き", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード2：箇条書きモード」として処理してください。"),
     ("❓", "強制: 質問回答", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード3：質問回答モード」として処理してください。")
 ]
@@ -96,14 +96,13 @@ def init_gui():
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.85)  # 少し半透明にしてスマートに
+    root.attributes("-alpha", 0.85)
     
     window_width = 160
     window_height = 40
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     
-    # ★ 画面の中央下に配置
     x = (screen_width - window_width) // 2
     y = screen_height - window_height - 60 
     
@@ -119,10 +118,8 @@ def init_gui():
 hide_timer_id = None
 
 def update_ui(text, color='#61afef', show=True, auto_hide=False):
-    """UIの文字と色を更新し、指定があれば2秒後に完全に非表示にする"""
     def _update():
         global hide_timer_id
-        # 前の非表示タイマーが動いていたらキャンセル（連打対策）
         if hide_timer_id is not None:
             root.after_cancel(hide_timer_id)
             hide_timer_id = None
@@ -135,8 +132,7 @@ def update_ui(text, color='#61afef', show=True, auto_hide=False):
             root.withdraw()
             
         if auto_hide:
-            # 3秒後にウィンドウ自体を完全に隠す
-            hide_timer_id = root.after(3000, lambda: root.withdraw())
+            hide_timer_id = root.after(2000, lambda: root.withdraw())
             
     root.after(0, _update)
 
@@ -157,53 +153,70 @@ def animate_processing():
 def record_and_process():
     global current_state
     
-    img_part = None
-    if SEND_SCREENSHOT:
-        screenshot = capture_active_window()
-        screenshot.thumbnail((1024, 1024))
-        if screenshot.mode != 'RGB':
-            screenshot = screenshot.convert('RGB')
-        img_byte_arr = io.BytesIO()
-        screenshot.save(img_byte_arr, format='JPEG', quality=85)
-        
-        img_part = types.Part.from_bytes(
-            data=img_byte_arr.getvalue(),
-            mime_type="image/jpeg"
-        )
-    
-    CHUNK = 1024
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    RATE = 16000 
-    
-    p = pyaudio.PyAudio()
-    stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-    frames = []
-    
-    print("\n[録音中...]")
-    while current_state == STATE_RECORDING:
-        data = stream.read(CHUNK)
-        frames.append(data)
-        
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-    
-    print("[処理中...]")
-    
-    audio_io = io.BytesIO()
-    with wave.open(audio_io, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(p.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
-    
-    audio_part = types.Part.from_bytes(
-        data=audio_io.getvalue(),
-        mime_type="audio/wav"
-    )
-    
     try:
+        # 1. 録音処理
+        CHUNK = 1024
+        FORMAT = pyaudio.paInt16
+        CHANNELS = 1
+        RATE = 16000 
+        
+        p = pyaudio.PyAudio()
+        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+        frames = []
+        
+        print("\n[録音中...]")
+        
+        # ★ ここで録音開始時間を記録
+        record_start_time = time.time()
+        
+        while current_state == STATE_RECORDING:
+            data = stream.read(CHUNK)
+            frames.append(data)
+            
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        
+        # ★ 録音にかかった時間を計算
+        record_duration = time.time() - record_start_time
+        
+        # ★ 1秒未満ならキャンセル扱いにして終了（画像処理やAPI送信に行かせない）
+        if record_duration < 1.0:
+            print(f"[キャンセル] 録音時間が短すぎます（{record_duration:.2f}秒）。")
+            update_ui("🚫 キャンセル", color='#abb2bf', show=True, auto_hide=True)
+            return
+
+        print("[処理中...]")
+        
+        # 2. 画像データの準備 (キャンセルされなかった場合のみ実行)
+        img_part = None
+        if SEND_SCREENSHOT:
+            screenshot = capture_active_window()
+            screenshot.thumbnail((1024, 1024))
+            if screenshot.mode != 'RGB':
+                screenshot = screenshot.convert('RGB')
+            img_byte_arr = io.BytesIO()
+            screenshot.save(img_byte_arr, format='JPEG', quality=85)
+            
+            img_part = types.Part.from_bytes(
+                data=img_byte_arr.getvalue(),
+                mime_type="image/jpeg"
+            )
+        
+        # 3. 音声データのメモリ展開
+        audio_io = io.BytesIO()
+        with wave.open(audio_io, 'wb') as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(p.get_sample_size(FORMAT))
+            wf.setframerate(RATE)
+            wf.writeframes(b''.join(frames))
+        
+        audio_part = types.Part.from_bytes(
+            data=audio_io.getvalue(),
+            mime_type="audio/wav"
+        )
+        
+        # 4. 外部プロンプトファイルの読み込み
         prompt_file_path = "prompt.txt"
         if os.path.exists(prompt_file_path):
             with open(prompt_file_path, "r", encoding="utf-8") as f:
@@ -220,6 +233,7 @@ def record_and_process():
             request_data.append(img_part)
         request_data.append(audio_part)
         
+        # 5. Gemini APIへの送信
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=request_data
@@ -231,12 +245,12 @@ def record_and_process():
                 raise ValueError("Empty text")
         except ValueError:
             print("\n[警告] AIがテキストを生成しませんでした。")
-            # 処理終了後、2秒表示して完全に消す
             update_ui("生成スキップ", color='#abb2bf', show=True, auto_hide=True)
             return
             
         print(f"[完了] 生成されたテキスト: \n{result_text}")
         
+        # 6. クリップボードへのコピーと貼り付け
         pyperclip.copy(result_text)
         update_ui("✨ 処理終了", color='#98c379', show=True, auto_hide=True)
         
@@ -250,6 +264,7 @@ def record_and_process():
         print(f"[エラーが発生しました]: {e}")
         update_ui("❌ エラー発生", color='#e06c75', show=True, auto_hide=True)
     finally:
+        # キャンセルされた場合もエラーの場合も、確実に状態をIDLEに戻す
         current_state = STATE_IDLE
 
 def on_mode_hotkey_pressed():
@@ -260,7 +275,6 @@ def on_mode_hotkey_pressed():
     current_mode_idx = (current_mode_idx + 1) % len(MODES)
     icon, mode_name, _ = MODES[current_mode_idx]
     
-    # モード切り替え時、2秒間だけ表示して完全に消す
     update_ui(f"➔ {icon} {mode_name}", color='#e6e6e6', show=True, auto_hide=True)
 
 def on_hotkey_pressed():
@@ -269,7 +283,6 @@ def on_hotkey_pressed():
     if current_state == STATE_IDLE:
         current_state = STATE_RECORDING
         current_icon = MODES[current_mode_idx][0]
-        # 録音中は消さずに表示し続ける (auto_hide=False)
         update_ui(f"🎙️ [{current_icon}] 録音中...", color='#ff5555', show=True, auto_hide=False)
         threading.Thread(target=record_and_process, daemon=True).start()
         
@@ -292,4 +305,3 @@ if __name__ == "__main__":
     root, label = init_gui()
     threading.Thread(target=hotkey_listener_thread, daemon=True).start()
     root.mainloop()
-    
