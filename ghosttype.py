@@ -12,7 +12,6 @@ import pyautogui
 import pyperclip
 from PIL import ImageGrab
 
-# ＝＝＝ 新SDKへの変更点1：インポートの変更 ＝＝＝
 from google import genai
 from google.genai import types
 
@@ -27,10 +26,8 @@ if not API_KEY:
     os._exit(1)
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
-# スクショ送信フラグ (文字列の "true" を真偽値に変換)
 SEND_SCREENSHOT = os.environ.get("GHOSTTYPE_SEND_SCREENSHOT", "true").lower() == "true"
 
-# ＝＝＝ 新SDKへの変更点2：Clientを使った初期化 ＝＝＝
 client = genai.Client(api_key=API_KEY)
 
 # 状態管理
@@ -39,24 +36,40 @@ STATE_RECORDING = 1
 STATE_PROCESSING = 2
 current_state = STATE_IDLE
 
+# モード管理
+MODES = [
+    ("🤖", "自動(合言葉)", ""),
+    ("✉", "強制: メール", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード1：メールモード」として処理してください。"),
+    ("📝", "強制: 箇条書き", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード2：箇条書きモード」として処理してください。"),
+    ("❓", "強制: 質問回答", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード3：質問回答モード」として処理してください。")
+]
+current_mode_idx = 0  
+
 # ==========================================
 # Windows API ホットキー登録
 # ==========================================
 def hotkey_listener_thread():
     user32 = ctypes.windll.user32
     MOD_CONTROL = 0x0002
+    MOD_SHIFT = 0x0004
     MOD_NOREPEAT = 0x4000
     VK_SPACE = 0x20
-    HOTKEY_ID = 1
+    
+    HOTKEY_RECORD = 1    
+    HOTKEY_MODE = 2      
 
-    if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_NOREPEAT, VK_SPACE):
-        print("[エラー] ホットキー(Ctrl+Space)の登録に失敗しました。")
-        return
+    if not user32.RegisterHotKey(None, HOTKEY_RECORD, MOD_CONTROL | MOD_NOREPEAT, VK_SPACE):
+        print("[エラー] 録音ホットキー(Ctrl+Space)の登録に失敗しました。")
+    if not user32.RegisterHotKey(None, HOTKEY_MODE, MOD_SHIFT | MOD_NOREPEAT, VK_SPACE):
+        print("[エラー] モード切替ホットキー(Shift+Space)の登録に失敗しました。")
 
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-        if msg.message == 0x0312:  # WM_HOTKEY
-            on_hotkey_pressed()
+        if msg.message == 0x0312:  
+            if msg.wParam == HOTKEY_RECORD:
+                on_hotkey_pressed()
+            elif msg.wParam == HOTKEY_MODE:
+                on_mode_hotkey_pressed()
         user32.TranslateMessage(ctypes.byref(msg))
         user32.DispatchMessageW(ctypes.byref(msg))
 
@@ -73,7 +86,7 @@ def capture_active_window():
             bbox = (rect.left, rect.top, rect.right, rect.bottom)
             return ImageGrab.grab(bbox=bbox)
     except Exception as e:
-        print(f"[警告] アクティブウィンドウ取得失敗: {e}")
+        pass
     return pyautogui.screenshot()
 
 # ==========================================
@@ -83,33 +96,48 @@ def init_gui():
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
+    root.attributes("-alpha", 0.85)  # 少し半透明にしてスマートに
     
-    window_width = 200
-    window_height = 60
+    window_width = 160
+    window_height = 40
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     
+    # ★ 画面の中央下に配置
     x = (screen_width - window_width) // 2
-    y = screen_height - window_height - 100 
+    y = screen_height - window_height - 60 
     
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
     root.configure(bg='#282c34')
     
-    label = tk.Label(root, text="", fg='#61afef', bg='#282c34', font=('メイリオ', 14, 'bold'))
+    label = tk.Label(root, text="", fg='#61afef', bg='#282c34', font=('メイリオ', 10, 'bold'))
     label.pack(expand=True, fill='both')
     
     root.withdraw()
     return root, label
 
+hide_timer_id = None
+
 def update_ui(text, color='#61afef', show=True, auto_hide=False):
+    """UIの文字と色を更新し、指定があれば2秒後に完全に非表示にする"""
     def _update():
+        global hide_timer_id
+        # 前の非表示タイマーが動いていたらキャンセル（連打対策）
+        if hide_timer_id is not None:
+            root.after_cancel(hide_timer_id)
+            hide_timer_id = None
+            
         label.config(text=text, fg=color)
+        
         if show:
             root.deiconify()
         else:
             root.withdraw()
+            
         if auto_hide:
-            root.after(2000, lambda: root.withdraw())
+            # 3秒後にウィンドウ自体を完全に隠す
+            hide_timer_id = root.after(3000, lambda: root.withdraw())
+            
     root.after(0, _update)
 
 anim_frames = ["⏳ 処理中", "⏳ 処理中.", "⌛ 処理中..", "⌛ 処理中..."]
@@ -120,7 +148,6 @@ def animate_processing():
     if current_state == STATE_PROCESSING:
         text = anim_frames[anim_idx % len(anim_frames)]
         label.config(text=text, fg='#e5c07b')
-        root.deiconify()
         anim_idx += 1
         root.after(400, animate_processing)
 
@@ -130,7 +157,6 @@ def animate_processing():
 def record_and_process():
     global current_state
     
-    # 1. 画像データの準備 (フラグがTrueの時だけ撮影・処理して時間を節約)
     img_part = None
     if SEND_SCREENSHOT:
         screenshot = capture_active_window()
@@ -140,13 +166,11 @@ def record_and_process():
         img_byte_arr = io.BytesIO()
         screenshot.save(img_byte_arr, format='JPEG', quality=85)
         
-        # ＝＝＝ 新SDKへの変更点3：画像データをPartオブジェクトに変換 ＝＝＝
         img_part = types.Part.from_bytes(
             data=img_byte_arr.getvalue(),
             mime_type="image/jpeg"
         )
     
-    # 2. 録音処理
     CHUNK = 1024
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
@@ -167,7 +191,6 @@ def record_and_process():
     
     print("[処理中...]")
     
-    # 3. 音声データのメモリ展開
     audio_io = io.BytesIO()
     with wave.open(audio_io, 'wb') as wf:
         wf.setnchannels(CHANNELS)
@@ -175,29 +198,28 @@ def record_and_process():
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
     
-    # ＝＝＝ 新SDKへの変更点4：音声データをPartオブジェクトに変換 ＝＝＝
     audio_part = types.Part.from_bytes(
         data=audio_io.getvalue(),
         mime_type="audio/wav"
     )
     
     try:
-        # 4. 外部プロンプトファイルの読み込み
         prompt_file_path = "prompt.txt"
         if os.path.exists(prompt_file_path):
             with open(prompt_file_path, "r", encoding="utf-8") as f:
-                prompt = f.read()
+                base_prompt = f.read()
         else:
             print("[警告] prompt.txt が見つかりません。デフォルトのプロンプトを使用します。")
-            prompt = "ユーザーの音声指示に基づき、入力すべきテキストのみを出力してください。"
+            base_prompt = "ユーザーの音声指示に基づき、入力すべきテキストのみを出力してください。"
         
-        # 5. APIリクエストデータの動的組み立て
-        request_data = [prompt]
+        forced_instruction = MODES[current_mode_idx][2]
+        final_prompt = base_prompt + forced_instruction
+
+        request_data = [final_prompt]
         if img_part:
-            request_data.append(img_part) # 画像があれば追加
-        request_data.append(audio_part)   # 音声を追加
+            request_data.append(img_part)
+        request_data.append(audio_part)
         
-        # ＝＝＝ 新SDKへの変更点5：リクエスト送信メソッドの変更 ＝＝＝
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=request_data
@@ -209,12 +231,12 @@ def record_and_process():
                 raise ValueError("Empty text")
         except ValueError:
             print("\n[警告] AIがテキストを生成しませんでした。")
+            # 処理終了後、2秒表示して完全に消す
             update_ui("生成スキップ", color='#abb2bf', show=True, auto_hide=True)
             return
             
         print(f"[完了] 生成されたテキスト: \n{result_text}")
         
-        # 7. クリップボードへコピーと貼り付け
         pyperclip.copy(result_text)
         update_ui("✨ 処理終了", color='#98c379', show=True, auto_hide=True)
         
@@ -230,12 +252,25 @@ def record_and_process():
     finally:
         current_state = STATE_IDLE
 
+def on_mode_hotkey_pressed():
+    global current_mode_idx
+    if current_state != STATE_IDLE:
+        return 
+    
+    current_mode_idx = (current_mode_idx + 1) % len(MODES)
+    icon, mode_name, _ = MODES[current_mode_idx]
+    
+    # モード切り替え時、2秒間だけ表示して完全に消す
+    update_ui(f"➔ {icon} {mode_name}", color='#e6e6e6', show=True, auto_hide=True)
+
 def on_hotkey_pressed():
     global current_state, anim_idx
     
     if current_state == STATE_IDLE:
         current_state = STATE_RECORDING
-        update_ui("🎙️ 録音中...", color='#ff5555', show=True)
+        current_icon = MODES[current_mode_idx][0]
+        # 録音中は消さずに表示し続ける (auto_hide=False)
+        update_ui(f"🎙️ [{current_icon}] 録音中...", color='#ff5555', show=True, auto_hide=False)
         threading.Thread(target=record_and_process, daemon=True).start()
         
     elif current_state == STATE_RECORDING:
@@ -246,13 +281,15 @@ def on_hotkey_pressed():
     elif current_state == STATE_PROCESSING:
         print("[無視] 現在処理中です。しばらくお待ちください...")
 
-# ==========================================
-# メイン実行部
-# ==========================================
 if __name__ == "__main__":
-    print("待機中です... 【Ctrl + Space】 を押して操作してください。")
-    print("終了するにはこのコンソールを閉じてください。")
+    print("==================================================")
+    print(" GhostType 待機中...")
+    print(" 【Ctrl + Space】  : 録音の開始 / 停止")
+    print(" 【Shift + Space】 : モードの切り替え（自動・強制）")
+    print(" 終了するにはこのコンソールを閉じてください。")
+    print("==================================================")
     
     root, label = init_gui()
     threading.Thread(target=hotkey_listener_thread, daemon=True).start()
     root.mainloop()
+    
