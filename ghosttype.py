@@ -50,18 +50,23 @@ current_mode_idx = 0
 # ==========================================
 def hotkey_listener_thread():
     user32 = ctypes.windll.user32
+    MOD_ALT = 0x0001           # ★ Altキー
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
+    MOD_WIN = 0x0008           # ★ Winキーを追加
     MOD_NOREPEAT = 0x4000
     VK_SPACE = 0x20
     
     HOTKEY_RECORD = 1    
     HOTKEY_MODE = 2      
 
+    # 録音：Ctrl + Space (そのまま)
     if not user32.RegisterHotKey(None, HOTKEY_RECORD, MOD_CONTROL | MOD_NOREPEAT, VK_SPACE):
         print("[エラー] 録音ホットキー(Ctrl+Space)の登録に失敗しました。")
-    if not user32.RegisterHotKey(None, HOTKEY_MODE, MOD_SHIFT | MOD_NOREPEAT, VK_SPACE):
-        print("[エラー] モード切替ホットキー(Shift+Space)の登録に失敗しました。")
+        
+    # ★モード切替：Win + Alt + Space に変更
+    if not user32.RegisterHotKey(None, HOTKEY_MODE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
+        print("[エラー] モード切替ホットキー(Win+Alt+Space)の登録に失敗しました。")
 
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
@@ -298,7 +303,7 @@ if __name__ == "__main__":
     print("==================================================")
     print(" GhostType 待機中...")
     print(" 【Ctrl + Space】  : 録音の開始 / 停止")
-    print(" 【Shift + Space】 : モードの切り替え（自動・強制）")
+    print(" 【Win + Alt + Space】 : モードの切り替え（自動・強制）")
     print(" 終了するにはこのコンソールを閉じてください。")
     print("==================================================")
     
