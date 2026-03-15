@@ -26,7 +26,6 @@ if not API_KEY:
     os._exit(1)
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
-# ※スクショ設定の環境変数は削除しました
 
 client = genai.Client(api_key=API_KEY)
 
@@ -42,6 +41,11 @@ current_state = STATE_IDLE
 MODES = [
     ("🗣️", "口述のみ", 
      "\n\n【指示】ユーザーの音声を文字起こししてください。フィラー（えー、あの等）を除去し、適切な句読点を補ってください。ただし、AIとしての回答や文章の創作は絶対にせず、発話内容の清書のみを行ってください。", 
+     False, False),
+     
+    # ★ 新規追加: 口述(口語) モード
+    ("💬", "口述(口語)", 
+     "\n\n【指示・重要】ユーザーの音声を文字起こししてください。フィラーや言い間違えを除去し、適切な句読点を補いますが、語尾を丁寧語（です・ます等）に変換したり整えすぎたりせず、できる限り発話された口語表現（「なんだよね」など）に忠実に文字起こしをしてください。AIとしての回答はしないでください。", 
      False, False),
      
     ("📋", "口述+クリップ", 
@@ -73,7 +77,7 @@ MODES = [
      False, True)
 ]
 current_mode_idx = 0  
-mode_ui_visible_until = 0  # 1回押し(確認)と2回押し(切替)を判定するためのタイマー
+mode_ui_visible_until = 0
 
 # ==========================================
 # Windows API ホットキー登録
@@ -89,10 +93,8 @@ def hotkey_listener_thread():
     HOTKEY_RECORD = 1    
     HOTKEY_MODE = 2      
 
-    # 録音: Ctrl + Space
     if not user32.RegisterHotKey(None, HOTKEY_RECORD, MOD_CONTROL | MOD_NOREPEAT, VK_SPACE):
         print("[エラー] 録音ホットキー(Ctrl+Space)の登録に失敗しました。")
-    # モード切替: Win + Alt + Space
     if not user32.RegisterHotKey(None, HOTKEY_MODE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
         print("[エラー] モード切替ホットキー(Win+Alt+Space)の登録に失敗しました。")
 
@@ -131,7 +133,7 @@ def init_gui():
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.85)
     
-    window_width = 180  # 文字数が増えるモードがあるため少し広げました
+    window_width = 180  
     window_height = 40
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
@@ -186,11 +188,9 @@ def animate_processing():
 def record_and_process():
     global current_state
     
-    # 現在のモード設定を取得
     icon, mode_name, instruction, use_clip, use_screen = MODES[current_mode_idx]
     
     try:
-        # 1. 録音処理
         CHUNK = 1024
         FORMAT = pyaudio.paInt16
         CHANNELS = 1
@@ -211,7 +211,6 @@ def record_and_process():
         stream.close()
         p.terminate()
         
-        # 短時間キャンセル処理
         record_duration = time.time() - record_start_time
         if record_duration < 1.0:
             print(f"[キャンセル] 録音時間が短すぎます（{record_duration:.2f}秒）。")
@@ -220,7 +219,6 @@ def record_and_process():
 
         print("[処理中...]")
         
-        # 2. 画像データの準備 (モードで許可されている場合のみ)
         img_part = None
         if use_screen:
             screenshot = capture_active_window()
@@ -235,7 +233,6 @@ def record_and_process():
                 mime_type="image/jpeg"
             )
             
-        # 3. クリップボードデータの準備 (モードで許可されている場合のみ)
         clip_text_appended = ""
         if use_clip:
             try:
@@ -245,7 +242,6 @@ def record_and_process():
             except Exception as e:
                 print(f"[警告] クリップボードの取得に失敗: {e}")
         
-        # 4. 音声データのメモリ展開
         audio_io = io.BytesIO()
         with wave.open(audio_io, 'wb') as wf:
             wf.setnchannels(CHANNELS)
@@ -258,7 +254,6 @@ def record_and_process():
             mime_type="audio/wav"
         )
         
-        # 5. プロンプトの組み立て
         prompt_file_path = "prompt.txt"
         if os.path.exists(prompt_file_path):
             with open(prompt_file_path, "r", encoding="utf-8") as f:
@@ -266,7 +261,6 @@ def record_and_process():
         else:
             base_prompt = ""
             
-        # ベース + モード専用指示 + クリップボード内容
         final_prompt = base_prompt + instruction + clip_text_appended
 
         request_data = [final_prompt]
@@ -274,7 +268,6 @@ def record_and_process():
             request_data.append(img_part)
         request_data.append(audio_part)
         
-        # 6. Gemini APIへの送信
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=request_data
@@ -291,7 +284,6 @@ def record_and_process():
             
         print(f"[完了] 生成されたテキスト: \n{result_text}")
         
-        # 7. クリップボードへのコピーと貼り付け
         pyperclip.copy(result_text)
         update_ui("✨ 処理終了", color='#98c379', show=True, auto_hide=True)
         
@@ -314,15 +306,12 @@ def on_mode_hotkey_pressed():
     
     now = time.time()
     
-    # 前回押してから2秒以内（UIが表示中）ならモードを切り替える
     if now < mode_ui_visible_until:
         current_mode_idx = (current_mode_idx + 1) % len(MODES)
         prefix = "➔ "
     else:
-        # 初回押し（UI非表示時）は現在のモードを確認するだけ
         prefix = "👀 "
         
-    # UIの表示有効期限を「今から2秒後」に延長/設定する
     mode_ui_visible_until = now + 2.0
     
     icon, mode_name, _, _, _ = MODES[current_mode_idx]
