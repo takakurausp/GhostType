@@ -36,45 +36,47 @@ STATE_PROCESSING = 2
 current_state = STATE_IDLE
 
 # ==========================================
-# モード管理 (アイコン, 表示名, プロンプト指示, クリップボード使用, スクショ使用)
+# モード管理 (アイコン, 表示名, プロンプト指示, クリップボード使用, スクショ使用, 表示カラー)
 # ==========================================
 MODES = [
-    ("🗣️", "口述のみ", 
+    # --- 口述グループ (白: #ffffff) ---
+    ("💬", "口述のみ", 
      "\n\n【指示】ユーザーの音声を文字起こししてください。フィラー（えー、あの等）を除去し、適切な句読点を補ってください。ただし、AIとしての回答や文章の創作は絶対にせず、発話内容の清書のみを行ってください。", 
-     False, False),
+     False, False, "#ffffff"),
      
-    # ★ 新規追加: 口述(口語) モード
-    ("💬", "口述(口語)", 
+    ("🗯", "口述(口語)", 
      "\n\n【指示・重要】ユーザーの音声を文字起こししてください。フィラーや言い間違えを除去し、適切な句読点を補いますが、語尾を丁寧語（です・ます等）に変換したり整えすぎたりせず、できる限り発話された口語表現（「なんだよね」など）に忠実に文字起こしをしてください。AIとしての回答はしないでください。", 
-     False, False),
+     False, False, "#ffffff"),
      
-    ("📋", "口述+クリップ", 
+    ("💬📋", "口述+クリップ", 
      "\n\n【指示】ユーザーの音声を文字起こしし、フィラー除去と句読点補正を行ってください。以下の【クリップボードの内容】を参照情報として活用し、専門用語や文脈の正確性を高めてください。AIとしての回答はしないでください。", 
-     True, False),
+     True, False, "#ffffff"),
      
-    ("🖼️", "口述+スクショ", 
+    ("💬🖼", "口述+スクショ", 
      "\n\n【指示】ユーザーの音声を文字起こしし、フィラー除去と句読点補正を行ってください。添付のスクリーンショット画像を参照情報として活用し、専門用語や文脈の正確性を高めてください。AIとしての回答はしないでください。", 
-     False, True),
+     False, True, "#ffffff"),
      
-    ("✉️", "メール", 
+    # --- メールグループ (明るい黄色: #ffeb3b) ---
+    ("✉", "メール", 
      "\n\n【指示】ユーザーの音声内容をもとに、ビジネスメールの形式（挨拶、結びなど）を補完して出力してください。AIとしての直接の回答は含めず、メール本文のみを出力してください。", 
-     False, False),
+     False, False, "#ffeb3b"),
      
-    ("📧", "メール+クリップ", 
+    ("✉📋", "メール+クリップ", 
      "\n\n【指示】以下の【クリップボードの内容】を受信メールとみなし、ユーザーの音声内容をもとに、その受信メールに対する返信メールを作成してください。ビジネスメールの形式を補完し、メール本文のみを出力してください。", 
-     True, False),
+     True, False, "#ffeb3b"),
      
+    # --- AIグループ (明るいグリーン: #4ade80) ---
     ("🤖", "AI", 
      "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。これに対する回答のみを出力してください。", 
-     False, False),
+     False, False, "#4ade80"),
      
     ("🤖📋", "AI+クリップ", 
      "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。以下の【クリップボードの内容】を参照情報として利用し、回答のみを出力してください。", 
-     True, False),
+     True, False, "#4ade80"),
      
-    ("🤖🖼️", "AI+スクショ", 
+    ("🤖🖼", "AI+スクショ", 
      "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。添付のスクリーンショット画像を参照情報として利用し、回答のみを出力してください。", 
-     False, True)
+     False, True, "#4ade80")
 ]
 current_mode_idx = 0  
 mode_ui_visible_until = 0
@@ -188,7 +190,8 @@ def animate_processing():
 def record_and_process():
     global current_state
     
-    icon, mode_name, instruction, use_clip, use_screen = MODES[current_mode_idx]
+    # リストから6つの要素（色を含む）を取り出す
+    icon, mode_name, instruction, use_clip, use_screen, mode_color = MODES[current_mode_idx]
     
     try:
         CHUNK = 1024
@@ -314,8 +317,9 @@ def on_mode_hotkey_pressed():
         
     mode_ui_visible_until = now + 2.0
     
-    icon, mode_name, _, _, _ = MODES[current_mode_idx]
-    update_ui(f"{prefix}{icon} {mode_name}", color='#e6e6e6', show=True, auto_hide=True)
+    # 色も取り出してUI更新に渡す
+    icon, mode_name, _, _, _, mode_color = MODES[current_mode_idx]
+    update_ui(f"{prefix}{icon} {mode_name}", color=mode_color, show=True, auto_hide=True)
 
 def on_hotkey_pressed():
     global current_state, anim_idx
@@ -323,6 +327,7 @@ def on_hotkey_pressed():
     if current_state == STATE_IDLE:
         current_state = STATE_RECORDING
         current_icon = MODES[current_mode_idx][0]
+        # 録音中は目立つように赤色のままにしています
         update_ui(f"🎙️ [{current_icon}] 録音中...", color='#ff5555', show=True, auto_hide=False)
         threading.Thread(target=record_and_process, daemon=True).start()
         
