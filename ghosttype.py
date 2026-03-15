@@ -26,7 +26,6 @@ if not API_KEY:
     os._exit(1)
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
-SEND_SCREENSHOT = os.environ.get("GHOSTTYPE_SEND_SCREENSHOT", "true").lower() == "true"
 
 client = genai.Client(api_key=API_KEY)
 
@@ -36,35 +35,68 @@ STATE_RECORDING = 1
 STATE_PROCESSING = 2
 current_state = STATE_IDLE
 
-# モード管理
+# ==========================================
+# モード管理 (アイコン, 表示名, プロンプト指示, クリップボード使用, スクショ使用, 表示カラー)
+# ==========================================
 MODES = [
-    ("🤖", "自動(合言葉)", ""),
-    ("✉️", "強制: メール", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード1：メールモード」として処理してください。"),
-    ("📝", "強制: 箇条書き", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード2：箇条書きモード」として処理してください。"),
-    ("❓", "強制: 質問回答", "\n\n【強制指示】今回は音声の冒頭の合言葉の有無に関わらず、強制的に「モード3：質問回答モード」として処理してください。")
+    # --- 口述グループ (白: #ffffff) ---
+    ("💬", "口述のみ", 
+     "\n\n【指示】ユーザーの音声を文字起こししてください。フィラー（えー、あの等）を除去し、適切な句読点を補ってください。ただし、AIとしての回答や文章の創作は絶対にせず、発話内容の清書のみを行ってください。", 
+     False, False, "#ffffff"),
+     
+    ("🗯", "口述(口語)", 
+     "\n\n【指示・重要】ユーザーの音声を文字起こししてください。フィラーや言い間違えを除去し、適切な句読点を補いますが、語尾を丁寧語（です・ます等）に変換したり整えすぎたりせず、できる限り発話された口語表現（「なんだよね」など）に忠実に文字起こしをしてください。AIとしての回答はしないでください。", 
+     False, False, "#ffffff"),
+     
+    ("💬📋", "口述+クリップ", 
+     "\n\n【指示】ユーザーの音声を文字起こしし、フィラー除去と句読点補正を行ってください。以下の【クリップボードの内容】を参照情報として活用し、専門用語や文脈の正確性を高めてください。AIとしての回答はしないでください。", 
+     True, False, "#ffffff"),
+     
+    ("💬🖼", "口述+スクショ", 
+     "\n\n【指示】ユーザーの音声を文字起こしし、フィラー除去と句読点補正を行ってください。添付のスクリーンショット画像を参照情報として活用し、専門用語や文脈の正確性を高めてください。AIとしての回答はしないでください。", 
+     False, True, "#ffffff"),
+     
+    # --- メールグループ (明るい黄色: #ffeb3b) ---
+    ("✉", "メール", 
+     "\n\n【指示】ユーザーの音声内容をもとに、ビジネスメールの形式（挨拶、結びなど）を補完して出力してください。AIとしての直接の回答は含めず、メール本文のみを出力してください。", 
+     False, False, "#ffeb3b"),
+     
+    ("✉📋", "メール+クリップ", 
+     "\n\n【指示】以下の【クリップボードの内容】を受信メールとみなし、ユーザーの音声内容をもとに、その受信メールに対する返信メールを作成してください。ビジネスメールの形式を補完し、メール本文のみを出力してください。", 
+     True, False, "#ffeb3b"),
+     
+    # --- AIグループ (明るいグリーン: #4ade80) ---
+    ("🤖", "AI", 
+     "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。これに対する回答のみを出力してください。", 
+     False, False, "#4ade80"),
+     
+    ("🤖📋", "AI+クリップ", 
+     "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。以下の【クリップボードの内容】を参照情報として利用し、回答のみを出力してください。", 
+     True, False, "#4ade80"),
+     
+    ("🤖🖼", "AI+スクショ", 
+     "\n\n【指示】ユーザーの音声はあなた（AI）への質問・要求です。添付のスクリーンショット画像を参照情報として利用し、回答のみを出力してください。", 
+     False, True, "#4ade80")
 ]
 current_mode_idx = 0  
+mode_ui_visible_until = 0
 
 # ==========================================
 # Windows API ホットキー登録
 # ==========================================
 def hotkey_listener_thread():
     user32 = ctypes.windll.user32
-    MOD_ALT = 0x0001           # ★ Altキー
+    MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
-    MOD_SHIFT = 0x0004
-    MOD_WIN = 0x0008           # ★ Winキーを追加
+    MOD_WIN = 0x0008
     MOD_NOREPEAT = 0x4000
     VK_SPACE = 0x20
     
     HOTKEY_RECORD = 1    
     HOTKEY_MODE = 2      
 
-    # 録音：Ctrl + Space (そのまま)
     if not user32.RegisterHotKey(None, HOTKEY_RECORD, MOD_CONTROL | MOD_NOREPEAT, VK_SPACE):
         print("[エラー] 録音ホットキー(Ctrl+Space)の登録に失敗しました。")
-        
-    # ★モード切替：Win + Alt + Space に変更
     if not user32.RegisterHotKey(None, HOTKEY_MODE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
         print("[エラー] モード切替ホットキー(Win+Alt+Space)の登録に失敗しました。")
 
@@ -103,7 +135,7 @@ def init_gui():
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.85)
     
-    window_width = 160
+    window_width = 180  
     window_height = 40
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
@@ -158,8 +190,10 @@ def animate_processing():
 def record_and_process():
     global current_state
     
+    # リストから6つの要素（色を含む）を取り出す
+    icon, mode_name, instruction, use_clip, use_screen, mode_color = MODES[current_mode_idx]
+    
     try:
-        # 1. 録音処理
         CHUNK = 1024
         FORMAT = pyaudio.paInt16
         CHANNELS = 1
@@ -170,8 +204,6 @@ def record_and_process():
         frames = []
         
         print("\n[録音中...]")
-        
-        # ★ ここで録音開始時間を記録
         record_start_time = time.time()
         
         while current_state == STATE_RECORDING:
@@ -182,10 +214,7 @@ def record_and_process():
         stream.close()
         p.terminate()
         
-        # ★ 録音にかかった時間を計算
         record_duration = time.time() - record_start_time
-        
-        # ★ 1秒未満ならキャンセル扱いにして終了（画像処理やAPI送信に行かせない）
         if record_duration < 1.0:
             print(f"[キャンセル] 録音時間が短すぎます（{record_duration:.2f}秒）。")
             update_ui("🚫 キャンセル", color='#abb2bf', show=True, auto_hide=True)
@@ -193,9 +222,8 @@ def record_and_process():
 
         print("[処理中...]")
         
-        # 2. 画像データの準備 (キャンセルされなかった場合のみ実行)
         img_part = None
-        if SEND_SCREENSHOT:
+        if use_screen:
             screenshot = capture_active_window()
             screenshot.thumbnail((1024, 1024))
             if screenshot.mode != 'RGB':
@@ -207,8 +235,16 @@ def record_and_process():
                 data=img_byte_arr.getvalue(),
                 mime_type="image/jpeg"
             )
+            
+        clip_text_appended = ""
+        if use_clip:
+            try:
+                clip_text = pyperclip.paste()
+                if clip_text.strip():
+                    clip_text_appended = f"\n\n【クリップボードの内容】\n{clip_text}"
+            except Exception as e:
+                print(f"[警告] クリップボードの取得に失敗: {e}")
         
-        # 3. 音声データのメモリ展開
         audio_io = io.BytesIO()
         with wave.open(audio_io, 'wb') as wf:
             wf.setnchannels(CHANNELS)
@@ -221,24 +257,20 @@ def record_and_process():
             mime_type="audio/wav"
         )
         
-        # 4. 外部プロンプトファイルの読み込み
         prompt_file_path = "prompt.txt"
         if os.path.exists(prompt_file_path):
             with open(prompt_file_path, "r", encoding="utf-8") as f:
                 base_prompt = f.read()
         else:
-            print("[警告] prompt.txt が見つかりません。デフォルトのプロンプトを使用します。")
-            base_prompt = "ユーザーの音声指示に基づき、入力すべきテキストのみを出力してください。"
-        
-        forced_instruction = MODES[current_mode_idx][2]
-        final_prompt = base_prompt + forced_instruction
+            base_prompt = ""
+            
+        final_prompt = base_prompt + instruction + clip_text_appended
 
         request_data = [final_prompt]
         if img_part:
             request_data.append(img_part)
         request_data.append(audio_part)
         
-        # 5. Gemini APIへの送信
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=request_data
@@ -255,7 +287,6 @@ def record_and_process():
             
         print(f"[完了] 生成されたテキスト: \n{result_text}")
         
-        # 6. クリップボードへのコピーと貼り付け
         pyperclip.copy(result_text)
         update_ui("✨ 処理終了", color='#98c379', show=True, auto_hide=True)
         
@@ -269,18 +300,26 @@ def record_and_process():
         print(f"[エラーが発生しました]: {e}")
         update_ui("❌ エラー発生", color='#e06c75', show=True, auto_hide=True)
     finally:
-        # キャンセルされた場合もエラーの場合も、確実に状態をIDLEに戻す
         current_state = STATE_IDLE
 
 def on_mode_hotkey_pressed():
-    global current_mode_idx
+    global current_mode_idx, mode_ui_visible_until
     if current_state != STATE_IDLE:
         return 
     
-    current_mode_idx = (current_mode_idx + 1) % len(MODES)
-    icon, mode_name, _ = MODES[current_mode_idx]
+    now = time.time()
     
-    update_ui(f"➔ {icon} {mode_name}", color='#e6e6e6', show=True, auto_hide=True)
+    if now < mode_ui_visible_until:
+        current_mode_idx = (current_mode_idx + 1) % len(MODES)
+        prefix = "➔ "
+    else:
+        prefix = "👀 "
+        
+    mode_ui_visible_until = now + 2.0
+    
+    # 色も取り出してUI更新に渡す
+    icon, mode_name, _, _, _, mode_color = MODES[current_mode_idx]
+    update_ui(f"{prefix}{icon} {mode_name}", color=mode_color, show=True, auto_hide=True)
 
 def on_hotkey_pressed():
     global current_state, anim_idx
@@ -288,6 +327,7 @@ def on_hotkey_pressed():
     if current_state == STATE_IDLE:
         current_state = STATE_RECORDING
         current_icon = MODES[current_mode_idx][0]
+        # 録音中は目立つように赤色のままにしています
         update_ui(f"🎙️ [{current_icon}] 録音中...", color='#ff5555', show=True, auto_hide=False)
         threading.Thread(target=record_and_process, daemon=True).start()
         
@@ -302,8 +342,8 @@ def on_hotkey_pressed():
 if __name__ == "__main__":
     print("==================================================")
     print(" GhostType 待機中...")
-    print(" 【Ctrl + Space】  : 録音の開始 / 停止")
-    print(" 【Win + Alt + Space】 : モードの切り替え（自動・強制）")
+    print(" 【Ctrl + Space】      : 録音の開始 / 停止")
+    print(" 【Win + Alt + Space】 : モード確認（続けて押すと切替）")
     print(" 終了するにはこのコンソールを閉じてください。")
     print("==================================================")
     
