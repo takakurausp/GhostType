@@ -16,7 +16,7 @@ rem ↓↓↓ 使用するGeminiのモデル名を指定してください ↓�
 rem （例: gemini-2.5-flash, gemini-3-flash-preview または gemini-3.1-flash-lite-previewなど）
 rem set GEMINI_MODEL_NAME=gemini-2.5-flash
 rem set GEMINI_MODEL_NAME=gemini-3-flash-preview
-set GEMINI_MODEL_NAME=gemini-3.1-flash-lite-preview
+set GEMINI_MODEL_NAME=gemini-3.1-flash-lite
 
 echo ==========================================
 echo GhostType を起動しています...
